@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 169 (time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 170 (every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -162,6 +162,10 @@ function onShot(p, m) {
   dx /= dl; dy /= dl; dz /= dl;
   // the shot must start near where the server knows the shooter is
   if (Math.hypot(ox - p.x, oz - p.z) > SHOT_ORIGIN_MAX) return;
+  // step 170: tell every OTHER player about this shot, so their phones draw the bullet (only a picture: the hit is decided below)
+  for (const o of players.values()) {
+    if (o !== p) sendJson(o, { t: 'fx', id: p.id, x: ox, y: oy, z: oz, dx: dx, dy: dy, dz: dz });
+  }
   let best = null;
   let bestT = 1e9;
   // the shooter saw the others (his ping + his drawing delay) in the past: test the shot against where they WERE then

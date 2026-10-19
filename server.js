@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 177 (exact lag compensation: the shot says which time stamp the shooter was looking at; before: STEP 176 (a TEST BOT: a fake player on the server that runs in circles and shoots, for testing alone; set TEST_BOT to false to turn it off; before: STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 181 (fix "sometimes we cannot hit each other": a player who is shot down now REALLY dies on his phone (the server sends a killing "hurt"), a player who rolls or slides cannot be hit (like on his phone), a shooter whose phone is alive can always shoot, a wall right behind or beside the target no longer cancels a hit, the shot may start farther from the last known position (fast dashes), faster shot gap, a little wider hit tube and 5 test moments around the seen time; before: STEP 177 (exact lag compensation: the shot says which time stamp the shooter was looking at; before: STEP 176 (a TEST BOT: a fake player on the server that runs in circles and shoots, for testing alone; set TEST_BOT to false to turn it off; before: STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -8,14 +8,16 @@ const TICK_MS = 33; // 30 snapshots per second
 // step 162: the hit rules (the server decides, the phones only send "I fired from here in this direction")
 const MAX_HP = 100;
 const SHOT_DAMAGE = 10;      // hp lost per hit (10 hits to kill)
-const HIT_RADIUS = 0.65;     // the invisible tube around a player (blocks)
+const HIT_RADIUS = 0.72;     // the invisible tube around a player (blocks) (step 181: a little wider, was 0.65)
 const HIT_HEIGHT = 1.8;      // from his feet up
 const SHOT_RANGE = 80;       // how far a shot reaches
-const SHOT_GAP_MS = 80;      // the fastest the server accepts shots from one player
+const SHOT_GAP_MS = 50;      // the fastest the server accepts shots from one player (step 181: was 80)
 const INTERP_MS = 100;       // step 169: the default drawing delay of a phone (every phone tells the server its real delay with the "rtt" message)
 const MAX_REWIND_MS = 600;   // the most the server goes back in time to check a shot
 const HIST_MS = 1500;        // how long the positions of every player are remembered
-const SHOT_ORIGIN_MAX = 4;   // a shot must start this close to where the server knows the shooter is
+const SHOT_ORIGIN_MAX = 8;   // a shot must start this close to where the server knows the shooter is (step 181: was 4, a fast dash with a high ping moves farther than that)
+const DOWN_MAX_MS = 1500;    // step 181: a player marked "down" whose phone never shows the dead flag is back after this long (was 20 s): his phone ignores hits while he rolls or slides, so it could be alive
+const WALL_MARGIN = 0.4;     // step 181: a wall that is only this much nearer than the target does not cancel the hit
 // step 165: the SOLID boxes of the village (x, y, z = middle, then the sizes): copied from VillageMap.kt (houses, temple, pagoda base, stalls, tree trunks, the map wall)
 const WALLS = [[-23.0, 2.5, -38.5, 8.0, 5.0, 9.0], [-12.0, 2.4, -39.0, 8.0, 4.8, 10.0], [12.0, 2.5, -38.5, 8.0, 5.0, 9.0], [23.0, 2.4, -39.5, 8.0, 4.8, 11.0], [-23.0, 2.8, 39.0, 8.0, 5.6, 10.0], [-12.0, 3.1, 38.5, 8.0, 6.2, 9.0], [12.0, 2.8, 39.5, 8.0, 5.6, 11.0], [23.0, 3.1, 38.5, 8.0, 6.2, 9.0], [-38.5, 2.4, -23.0, 9.0, 4.8, 8.0], [-39.5, 2.5, -12.0, 11.0, 5.0, 8.0], [-38.5, 2.4, 12.0, 9.0, 4.8, 8.0], [-39.0, 2.5, 23.0, 10.0, 5.0, 8.0], [39.5, 3.1, -23.0, 11.0, 6.2, 8.0], [38.5, 2.8, -12.0, 9.0, 5.6, 8.0], [39.0, 3.1, 12.0, 10.0, 6.2, 8.0], [38.5, 2.8, 23.0, 9.0, 5.6, 8.0], [0.0, 3.5, -57.0, 22.0, 7.0, 14.0], [-24.0, 1.68, -56.0, 4.34, 3.36, 4.34], [-13.5, 0.5, -31.9, 3.0, 1.0, 1.4], [13.5, 0.5, -31.9, 3.0, 1.0, 1.4], [-13.5, 0.5, 31.9, 3.0, 1.0, 1.4], [13.5, 0.5, 31.9, 3.0, 1.0, 1.4], [-8.5, 1.1, -32.0, 0.5, 2.2, 0.5], [-8.5, 1.1, 32.0, 0.5, 2.2, 0.5], [-32.0, 1.1, -8.5, 0.5, 2.2, 0.5], [32.0, 1.1, -8.5, 0.5, 2.2, 0.5], [8.5, 1.1, -32.0, 0.5, 2.2, 0.5], [8.5, 1.1, 32.0, 0.5, 2.2, 0.5], [-32.0, 1.1, 8.5, 0.5, 2.2, 0.5], [32.0, 1.1, 8.5, 0.5, 2.2, 0.5], [-35.0, 1.1, -35.0, 0.5, 2.2, 0.5], [-35.0, 1.1, 35.0, 0.5, 2.2, 0.5], [35.0, 1.1, 35.0, 0.5, 2.2, 0.5], [0.0, 1.5, -72.0, 146.0, 3.0, 1.2], [0.0, 1.5, 72.0, 146.0, 3.0, 1.2], [-72.0, 1.5, 0.0, 1.2, 3.0, 146.0], [72.0, 1.5, 0.0, 1.2, 3.0, 146.0]];
 const players = new Map();
@@ -146,7 +148,8 @@ function rayWalls(ox, oy, oz, dx, dy, dz) {
 }
 
 function onShot(p, m) {
-  if (p.down || !p.has) return;
+  // step 181: a shooter whose phone is alive can always shoot (before, a "down" mark on the server could block him although his phone still stood up)
+  if (!p.has || (p.down && (p.a & 64) !== 0)) return;
   const now = Date.now();
   if (now - p.lastShot < SHOT_GAP_MS) return;
   p.lastShot = now;
@@ -161,7 +164,10 @@ function onShot(p, m) {
   if (dl < 0.001) return;
   dx /= dl; dy /= dl; dz /= dl;
   // the shot must start near where the server knows the shooter is
-  if (Math.hypot(ox - p.x, oz - p.z) > SHOT_ORIGIN_MAX) return;
+  if (Math.hypot(ox - p.x, oz - p.z) > SHOT_ORIGIN_MAX) {
+    console.log('shot refused: starts too far from the shooter', p.id);
+    return;
+  }
   // step 170: tell every OTHER player about this shot, so their phones draw the bullet (only a picture: the hit is decided below)
   for (const o of players.values()) {
     if (o !== p) sendJson(o, { t: 'fx', id: p.id, x: ox, y: oy, z: oz, dx: dx, dy: dy, dz: dz });
@@ -171,16 +177,18 @@ function onShot(p, m) {
   // the shooter saw the others (his ping + his drawing delay) in the past: test the shot against where they WERE then
   const rewind = Math.max(0, Math.min(MAX_REWIND_MS, p.rtt + p.delay));
   // step 177: the phone says exactly which time stamp it was looking at (w). Without it the guess above is used.
+  // step 181: 5 test moments around it (was 3)
   const w = Number(m.w);
   const tList = [];
   if (Number.isFinite(w) && w > 0) {
-    for (const d of [0, -50, 50]) tList.push(Math.max(now - MAX_REWIND_MS, Math.min(now, w + d)));
+    for (const d of [0, -40, 40, -80, 80]) tList.push(Math.max(now - MAX_REWIND_MS, Math.min(now, w + d)));
   } else {
     for (const k of [1, 0.7, 1.3]) tList.push(now - Math.min(MAX_REWIND_MS, rewind * k));
   }
   for (const o of players.values()) {
-    if (o === p || o.down || !o.has) continue;
-    // step 173: the rewind time is a guess (the ping jumps around), so the shot is tested at 3 moments around it and the nearest hit counts
+    // step 181: a rolling or sliding player (flag 8) cannot be hurt, the same rule as on his phone (before, the server took his health but his phone did not, and they disagreed who was down)
+    if (o === p || o.down || !o.has || (o.a & 8) !== 0) continue;
+    // step 173: the rewind time is a guess (the ping jumps around), so the shot is tested at several moments around it and the nearest hit counts
     let t = -1;
     for (const T of tList) {
       const q = posAt(o, T);
@@ -190,11 +198,15 @@ function onShot(p, m) {
     if (t >= 0 && t < bestT) { bestT = t; best = o; }
   }
   if (!best) return;
-  // step 165: a wall in the way: no hit
-  if (rayWalls(ox, oy, oz, dx, dy, dz) < bestT) return;
+  // step 165: a wall in the way: no hit. Step 181: but only when the wall is clearly nearer than the target (a target that stands against a wall can be hit)
+  if (rayWalls(ox, oy, oz, dx, dy, dz) < bestT - WALL_MARGIN) {
+    console.log('shot refused: a wall is in the way', p.id);
+    return;
+  }
   best.hp = Math.max(0, best.hp - SHOT_DAMAGE);
   if (best.bot && best.hp <= 0) best.hp = MAX_HP; // step 176: the test bot never goes down
-  sendJson(best, { t: 'hurt', d: SHOT_DAMAGE, hp: best.hp });
+  // step 181: the killing hit tells the phone to die for sure (d = 100 = the whole health), so the server and the phone always agree who is down
+  sendJson(best, { t: 'hurt', d: best.hp <= 0 ? 100 : SHOT_DAMAGE, hp: best.hp });
   sendJson(p, { t: 'hitok', id: best.id, hp: best.hp });
   if (best.hp <= 0) {
     best.down = true;
@@ -222,10 +234,10 @@ function onText(p, text) {
     p.lastStamp = st;
     p.hist.push({ t: st, x: p.x, y: p.y, z: p.z, yaw: p.yaw, a: p.a, pt: p.pitch });
     while (p.hist.length > 0 && now - p.hist[0].t > HIST_MS) p.hist.shift();
-    // a shot-down player is back when his phone stops sending the "dead" flag (64) after it had sent it (or after 20 s)
+    // a shot-down player is back when his phone stops sending the "dead" flag (64) after it had sent it (step 181: or after DOWN_MAX_MS)
     if (p.down) {
       if ((p.a & 64) !== 0) p.sawDead = true;
-      else if (p.sawDead || Date.now() - p.downAt > 20000) {
+      else if (p.sawDead || Date.now() - p.downAt > DOWN_MAX_MS) {
         p.down = false;
         p.hp = MAX_HP;
         sendJson(p, { t: 'hp', hp: p.hp });

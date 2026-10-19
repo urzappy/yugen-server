@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 176 (a TEST BOT: a fake player on the server that runs in circles and shoots, for testing alone; set TEST_BOT to false to turn it off; before: STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -185,6 +185,7 @@ function onShot(p, m) {
   // step 165: a wall in the way: no hit
   if (rayWalls(ox, oy, oz, dx, dy, dz) < bestT) return;
   best.hp = Math.max(0, best.hp - SHOT_DAMAGE);
+  if (best.bot && best.hp <= 0) best.hp = MAX_HP; // step 176: the test bot never goes down
   sendJson(best, { t: 'hurt', d: SHOT_DAMAGE, hp: best.hp });
   sendJson(p, { t: 'hitok', id: best.id, hp: best.hp });
   if (best.hp <= 0) {
@@ -312,6 +313,7 @@ setInterval(() => {
   if (players.size < 2) return;
   const s = Date.now();
   for (const me of players.values()) {
+    if (me.bot) continue; // step 176: the test bot has no phone to send to
     const list = [];
     for (const o of players.values()) {
       if (o === me || !o.has || o.hist.length === 0) continue;
@@ -331,6 +333,76 @@ setInterval(() => {
     sendJson(me, { t: 'snap', s: s, p: list });
   }
 }, TICK_MS);
+
+// step 176: THE TEST BOT. A fake player that lives on the server: it runs in a circle in the middle of the village and fires bursts at the nearest real player
+// (its bullets are only drawn, they do not hurt). It sends its positions through the same snapshots as a real phone, so you can test the run animation,
+// the aim, the bullets and your own hits alone. Your shots CAN hit it (it never goes down). Set TEST_BOT to false to turn it off.
+const TEST_BOT = true;
+const BOT_RADIUS = 9;        // the circle (blocks)
+const BOT_SPEED = 5;         // blocks per second
+function startBot() {
+  const stub = { write() {}, destroy() {}, setNoDelay() {} };
+  const bot = {
+    id: nextId++, socket: stub, buf: Buffer.alloc(0), dead: false, has: true, bot: true,
+    x: BOT_RADIUS, y: 0, z: 0, yaw: 0, pitch: 0, a: 0, lastSeen: Date.now(), sec: 0, count: 0,
+    hp: MAX_HP, hist: [], sent: new Map(), rtt: 0, delay: 0, off: null, lastStamp: 0,
+    down: false, downAt: 0, sawDead: false, lastShot: 0,
+  };
+  players.set(bot.id, bot);
+  console.log('test bot joined', bot.id);
+  let ang = 0;
+  let nextBurst = Date.now() + 3000;
+  let burstUntil = 0;
+  let lastFire = 0;
+  setInterval(() => {
+    const now = Date.now();
+    const dt = TICK_MS / 1000;
+    bot.lastSeen = now;
+    ang += (BOT_SPEED / BOT_RADIUS) * dt;
+    const nx = Math.cos(ang) * BOT_RADIUS;
+    const nz = Math.sin(ang) * BOT_RADIUS;
+    const vx = nx - bot.x;
+    const vz = nz - bot.z;
+    bot.x = nx;
+    bot.z = nz;
+    // facing = the way he runs (forward = (sin yaw, -cos yaw))
+    bot.yaw = Math.atan2(vx, -vz) * 180 / Math.PI;
+    // the nearest real player
+    let target = null;
+    let td = 1e9;
+    for (const o of players.values()) {
+      if (o.bot || !o.has || o.down) continue;
+      const d = Math.hypot(o.x - bot.x, o.z - bot.z);
+      if (d < td) { td = d; target = o; }
+    }
+    let firing = false;
+    if (now >= nextBurst) { burstUntil = now + 1000; nextBurst = now + 4000; }
+    if (target && now < burstUntil) {
+      firing = true;
+      const ox = bot.x, oy = bot.y + 1.3, oz = bot.z;
+      let dx = target.x - ox + (Math.random() - 0.5) * 1.0;
+      let dy = target.y + 1.0 - oy;
+      let dz = target.z - oz + (Math.random() - 0.5) * 1.0;
+      const dl = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      dx /= dl; dy /= dl; dz /= dl;
+      bot.yaw = Math.atan2(dx, -dz) * 180 / Math.PI;
+      bot.pitch = Math.asin(dy) * 180 / Math.PI;
+      if (now - lastFire >= 125) {
+        lastFire = now;
+        for (const o of players.values()) {
+          if (!o.bot) sendJson(o, { t: 'fx', id: bot.id, x: ox, y: oy, z: oz, dx: dx, dy: dy, dz: dz });
+        }
+      }
+    } else {
+      bot.pitch = 0;
+    }
+    bot.a = (firing ? 1 : 0);
+    bot.lastStamp = Math.max(now, bot.lastStamp + 1);
+    bot.hist.push({ t: bot.lastStamp, x: bot.x, y: bot.y, z: bot.z, yaw: bot.yaw, a: bot.a, pt: bot.pitch });
+    while (bot.hist.length > 0 && now - bot.hist[0].t > HIST_MS) bot.hist.shift();
+  }, TICK_MS);
+}
+if (TEST_BOT) startBot();
 
 // every 20 s: ping everybody, drop players silent for 45 s
 setInterval(() => {

@@ -1,10 +1,10 @@
-// YugenShadow online server - STEP 168 (lag compensation: shots are checked where the players were when the shooter saw them; 30 snapshots per second; no packages needed)
+// YugenShadow online server - STEP 169 (time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
 const PORT = process.env.PORT || 8080;
 const MAX_PLAYERS = 8;
-const TICK_MS = 33; // step 168: 30 snapshots per second
+const TICK_MS = 33; // 30 snapshots per second
 // step 162: the hit rules (the server decides, the phones only send "I fired from here in this direction")
 const MAX_HP = 100;
 const SHOT_DAMAGE = 10;      // hp lost per hit (10 hits to kill)
@@ -12,9 +12,9 @@ const HIT_RADIUS = 0.65;     // the invisible tube around a player (blocks)
 const HIT_HEIGHT = 1.8;      // from his feet up
 const SHOT_RANGE = 80;       // how far a shot reaches
 const SHOT_GAP_MS = 80;      // the fastest the server accepts shots from one player
-const INTERP_MS = 90;        // step 168: how far in the past the phones draw the other players (must match INTERP_DELAY in Online.kt)
-const MAX_REWIND_MS = 500;   // step 168: the most the server goes back in time to check a shot
-const HIST_MS = 1200;        // step 168: how long the positions of every player are remembered
+const INTERP_MS = 100;       // step 169: the default drawing delay of a phone (every phone tells the server its real delay with the "rtt" message)
+const MAX_REWIND_MS = 600;   // the most the server goes back in time to check a shot
+const HIST_MS = 1500;        // how long the positions of every player are remembered
 const SHOT_ORIGIN_MAX = 4;   // a shot must start this close to where the server knows the shooter is
 // step 165: the SOLID boxes of the village (x, y, z = middle, then the sizes): copied from VillageMap.kt (houses, temple, pagoda base, stalls, tree trunks, the map wall)
 const WALLS = [[-23.0, 2.5, -38.5, 8.0, 5.0, 9.0], [-12.0, 2.4, -39.0, 8.0, 4.8, 10.0], [12.0, 2.5, -38.5, 8.0, 5.0, 9.0], [23.0, 2.4, -39.5, 8.0, 4.8, 11.0], [-23.0, 2.8, 39.0, 8.0, 5.6, 10.0], [-12.0, 3.1, 38.5, 8.0, 6.2, 9.0], [12.0, 2.8, 39.5, 8.0, 5.6, 11.0], [23.0, 3.1, 38.5, 8.0, 6.2, 9.0], [-38.5, 2.4, -23.0, 9.0, 4.8, 8.0], [-39.5, 2.5, -12.0, 11.0, 5.0, 8.0], [-38.5, 2.4, 12.0, 9.0, 4.8, 8.0], [-39.0, 2.5, 23.0, 10.0, 5.0, 8.0], [39.5, 3.1, -23.0, 11.0, 6.2, 8.0], [38.5, 2.8, -12.0, 9.0, 5.6, 8.0], [39.0, 3.1, 12.0, 10.0, 6.2, 8.0], [38.5, 2.8, 23.0, 9.0, 5.6, 8.0], [0.0, 3.5, -57.0, 22.0, 7.0, 14.0], [-24.0, 1.68, -56.0, 4.34, 3.36, 4.34], [-13.5, 0.5, -31.9, 3.0, 1.0, 1.4], [13.5, 0.5, -31.9, 3.0, 1.0, 1.4], [-13.5, 0.5, 31.9, 3.0, 1.0, 1.4], [13.5, 0.5, 31.9, 3.0, 1.0, 1.4], [-8.5, 1.1, -32.0, 0.5, 2.2, 0.5], [-8.5, 1.1, 32.0, 0.5, 2.2, 0.5], [-32.0, 1.1, -8.5, 0.5, 2.2, 0.5], [32.0, 1.1, -8.5, 0.5, 2.2, 0.5], [8.5, 1.1, -32.0, 0.5, 2.2, 0.5], [8.5, 1.1, 32.0, 0.5, 2.2, 0.5], [-32.0, 1.1, 8.5, 0.5, 2.2, 0.5], [32.0, 1.1, 8.5, 0.5, 2.2, 0.5], [-35.0, 1.1, -35.0, 0.5, 2.2, 0.5], [-35.0, 1.1, 35.0, 0.5, 2.2, 0.5], [35.0, 1.1, 35.0, 0.5, 2.2, 0.5], [0.0, 1.5, -72.0, 146.0, 3.0, 1.2], [0.0, 1.5, 72.0, 146.0, 3.0, 1.2], [-72.0, 1.5, 0.0, 1.2, 3.0, 146.0], [72.0, 1.5, 0.0, 1.2, 3.0, 146.0]];
@@ -69,7 +69,21 @@ function num(v, lo, hi, d) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-// step 168: LAG COMPENSATION. Where was player o at the time T (ms)? (from his remembered positions, in between two of them)
+// step 169: the time of a position. The phone sends its own clock (c, in ms) with every position. Packets on a phone network arrive at uneven times,
+// so the server does not trust the arrival time: it works out the clock difference from the FASTEST packets (the lowest value of now - c is the packet
+// that was delayed the least) and gives every position the time c + difference. So the time stamps are as even as the phone's own clock.
+function stampOf(p, c, now) {
+  if (!Number.isFinite(c)) return Math.max(now, p.lastStamp + 1);
+  const off = now - c;
+  if (p.off === null) p.off = off;
+  else p.off = Math.min(p.off + 0.05, off); // goes up very slowly, so a clock that runs a little different cannot get stuck
+  let st = Math.round(c + p.off);
+  if (st > now) st = now;                   // never in the future
+  if (st <= p.lastStamp) st = p.lastStamp + 1;
+  return st;
+}
+
+// LAG COMPENSATION. Where was player o at the time T (ms, in stamp time)? (from his remembered positions, in between two of them)
 function posAt(o, T) {
   const h = o.hist;
   if (h.length === 0) return { x: o.x, y: o.y, z: o.z };
@@ -150,8 +164,8 @@ function onShot(p, m) {
   if (Math.hypot(ox - p.x, oz - p.z) > SHOT_ORIGIN_MAX) return;
   let best = null;
   let bestT = 1e9;
-  // step 168: the shooter saw the others about (his ping + the phone delay) in the past: test the shot against where they WERE then
-  const rewind = Math.max(0, Math.min(MAX_REWIND_MS, p.rtt + INTERP_MS));
+  // the shooter saw the others (his ping + his drawing delay) in the past: test the shot against where they WERE then
+  const rewind = Math.max(0, Math.min(MAX_REWIND_MS, p.rtt + p.delay));
   for (const o of players.values()) {
     if (o === p || o.down || !o.has) continue;
     const q = posAt(o, now - rewind);
@@ -177,16 +191,18 @@ function onText(p, text) {
   try { m = JSON.parse(text); } catch (e) { return; }
   if (!m || typeof m !== 'object') return;
   if (m.t === 'pos') {
+    const now = Date.now();
     p.x = num(m.x, -100, 100, p.x);
     p.y = num(m.y, -10, 60, p.y);
     p.z = num(m.z, -100, 100, p.z);
     p.yaw = num(m.yaw, -720, 720, p.yaw);
     p.a = Math.round(num(m.a, 0, 255, 0));
     p.has = true;
-    // step 168: remember where he is (for lag compensation)
-    const nowH = Date.now();
-    p.hist.push({ t: nowH, x: p.x, y: p.y, z: p.z });
-    while (p.hist.length > 0 && nowH - p.hist[0].t > HIST_MS) p.hist.shift();
+    // step 169: the time of this position (see stampOf) and the memory of where he was (for lag compensation)
+    const st = stampOf(p, m.c === undefined ? NaN : Number(m.c), now);
+    p.lastStamp = st;
+    p.hist.push({ t: st, x: p.x, y: p.y, z: p.z, yaw: p.yaw, a: p.a });
+    while (p.hist.length > 0 && now - p.hist[0].t > HIST_MS) p.hist.shift();
     // a shot-down player is back when his phone stops sending the "dead" flag (64) after it had sent it (or after 20 s)
     if (p.down) {
       if ((p.a & 64) !== 0) p.sawDead = true;
@@ -199,10 +215,12 @@ function onText(p, text) {
   } else if (m.t === 'shot') {
     onShot(p, m);
   } else if (m.t === 'p') {
-    // step 168: ping: the phone sends its clock, the server sends it straight back (the phone works out the round trip time)
+    // ping: the phone sends its clock, the server sends it straight back (the phone works out the round trip time)
     sendJson(p, { t: 'q', c: m.c });
   } else if (m.t === 'rtt') {
+    // the phone tells its ping and its drawing delay (both in ms)
     p.rtt = num(m.v, 0, 1000, p.rtt);
+    p.delay = num(m.d, 0, 400, p.delay);
   }
 }
 
@@ -265,7 +283,8 @@ server.on('upgrade', (req, socket) => {
   const p = {
     id: nextId++, socket, buf: Buffer.alloc(0), dead: false, has: false,
     x: 0, y: 0, z: 0, yaw: 0, a: 0, lastSeen: Date.now(), sec: 0, count: 0,
-    hp: MAX_HP, hist: [], rtt: 100, down: false, downAt: 0, sawDead: false, lastShot: 0,
+    hp: MAX_HP, hist: [], sent: new Map(), rtt: 100, delay: INTERP_MS, off: null, lastStamp: 0,
+    down: false, downAt: 0, sawDead: false, lastShot: 0,
   };
   players.set(p.id, p);
   console.log('joined', p.id, 'online', players.size);
@@ -275,15 +294,31 @@ server.on('upgrade', (req, socket) => {
   sendJson(p, { t: 'welcome', id: p.id });
 });
 
-// 20 times per second: send every player the positions of the OTHER players
+// 30 times per second: send every player the positions of the OTHER players.
+// step 169: "s" = the time on the server now (ms), and the last number of every player = the time stamp of his position (see stampOf).
+// The phone draws every player at (now - its delay) between two stamped positions, so late packets do not make him jump.
+// A snapshot can hold several positions of the same player (the ones the phone has not got yet), oldest first.
 setInterval(() => {
   if (players.size < 2) return;
+  const s = Date.now();
   for (const me of players.values()) {
     const list = [];
     for (const o of players.values()) {
-      if (o !== me && o.has) list.push([o.id, o.x, o.y, o.z, o.yaw, o.a, o.hp]);
+      if (o === me || !o.has || o.hist.length === 0) continue;
+      // every position of o that this phone has not got yet (oldest first, at most 5), so a late packet does not make a hole in his movement.
+      // If there is nothing new, the newest one is sent again (the phone ignores it, but it keeps him alive and shows his health).
+      const h = o.hist;
+      const lastSent = me.sent.get(o.id) || 0;
+      let from = h.length;
+      while (from > 0 && h[from - 1].t > lastSent && h.length - from < 5) from--;
+      if (from === h.length) from = h.length - 1;
+      for (let i = from; i < h.length; i++) {
+        const e = h[i];
+        list.push([o.id, e.x, e.y, e.z, e.yaw, e.a, o.hp, e.t]);
+      }
+      me.sent.set(o.id, h[h.length - 1].t);
     }
-    sendJson(me, { t: 'snap', p: list });
+    sendJson(me, { t: 'snap', s: s, p: list });
   }
 }, TICK_MS);
 

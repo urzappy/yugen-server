@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 176 (a TEST BOT: a fake player on the server that runs in circles and shoots, for testing alone; set TEST_BOT to false to turn it off; before: STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 177 (exact lag compensation: the shot says which time stamp the shooter was looking at; before: STEP 176 (a TEST BOT: a fake player on the server that runs in circles and shoots, for testing alone; set TEST_BOT to false to turn it off; before: STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -170,12 +170,20 @@ function onShot(p, m) {
   let bestT = 1e9;
   // the shooter saw the others (his ping + his drawing delay) in the past: test the shot against where they WERE then
   const rewind = Math.max(0, Math.min(MAX_REWIND_MS, p.rtt + p.delay));
+  // step 177: the phone says exactly which time stamp it was looking at (w). Without it the guess above is used.
+  const w = Number(m.w);
+  const tList = [];
+  if (Number.isFinite(w) && w > 0) {
+    for (const d of [0, -50, 50]) tList.push(Math.max(now - MAX_REWIND_MS, Math.min(now, w + d)));
+  } else {
+    for (const k of [1, 0.7, 1.3]) tList.push(now - Math.min(MAX_REWIND_MS, rewind * k));
+  }
   for (const o of players.values()) {
     if (o === p || o.down || !o.has) continue;
     // step 173: the rewind time is a guess (the ping jumps around), so the shot is tested at 3 moments around it and the nearest hit counts
     let t = -1;
-    for (const k of [1, 0.7, 1.3]) {
-      const q = posAt(o, now - Math.min(MAX_REWIND_MS, rewind * k));
+    for (const T of tList) {
+      const q = posAt(o, T);
       const tt = rayTube(ox, oy, oz, dx, dy, dz, q);
       if (tt >= 0 && (t < 0 || tt < t)) t = tt;
     }

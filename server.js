@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 173 (a shot is tested at 3 moments around the rewind time, so a moving target is hit more easily; before: STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -172,8 +172,13 @@ function onShot(p, m) {
   const rewind = Math.max(0, Math.min(MAX_REWIND_MS, p.rtt + p.delay));
   for (const o of players.values()) {
     if (o === p || o.down || !o.has) continue;
-    const q = posAt(o, now - rewind);
-    const t = rayTube(ox, oy, oz, dx, dy, dz, q);
+    // step 173: the rewind time is a guess (the ping jumps around), so the shot is tested at 3 moments around it and the nearest hit counts
+    let t = -1;
+    for (const k of [1, 0.7, 1.3]) {
+      const q = posAt(o, now - Math.min(MAX_REWIND_MS, rewind * k));
+      const tt = rayTube(ox, oy, oz, dx, dy, dz, q);
+      if (tt >= 0 && (t < 0 || tt < t)) t = tt;
+    }
     if (t >= 0 && t < bestT) { bestT = t; best = o; }
   }
   if (!best) return;

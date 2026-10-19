@@ -1,4 +1,4 @@
-// YugenShadow online server - STEP 170 (every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
+// YugenShadow online server - STEP 171 (the up-down aim of every player is sent too; before: STEP 170 every shot is sent to the other players so they can draw the bullet; before: STEP 169 time stamps: every position gets the time it was really taken, so the phones can draw other players smoothly; lag compensation uses the same time; no packages needed)
 const http = require('http');
 const crypto = require('crypto');
 
@@ -200,12 +200,13 @@ function onText(p, text) {
     p.y = num(m.y, -10, 60, p.y);
     p.z = num(m.z, -100, 100, p.z);
     p.yaw = num(m.yaw, -720, 720, p.yaw);
+    p.pitch = num(m.p, -90, 90, p.pitch); // step 171: up-down aim in degrees
     p.a = Math.round(num(m.a, 0, 255, 0));
     p.has = true;
     // step 169: the time of this position (see stampOf) and the memory of where he was (for lag compensation)
     const st = stampOf(p, m.c === undefined ? NaN : Number(m.c), now);
     p.lastStamp = st;
-    p.hist.push({ t: st, x: p.x, y: p.y, z: p.z, yaw: p.yaw, a: p.a });
+    p.hist.push({ t: st, x: p.x, y: p.y, z: p.z, yaw: p.yaw, a: p.a, pt: p.pitch });
     while (p.hist.length > 0 && now - p.hist[0].t > HIST_MS) p.hist.shift();
     // a shot-down player is back when his phone stops sending the "dead" flag (64) after it had sent it (or after 20 s)
     if (p.down) {
@@ -286,7 +287,7 @@ server.on('upgrade', (req, socket) => {
   socket.setNoDelay(true);
   const p = {
     id: nextId++, socket, buf: Buffer.alloc(0), dead: false, has: false,
-    x: 0, y: 0, z: 0, yaw: 0, a: 0, lastSeen: Date.now(), sec: 0, count: 0,
+    x: 0, y: 0, z: 0, yaw: 0, pitch: 0, a: 0, lastSeen: Date.now(), sec: 0, count: 0,
     hp: MAX_HP, hist: [], sent: new Map(), rtt: 100, delay: INTERP_MS, off: null, lastStamp: 0,
     down: false, downAt: 0, sawDead: false, lastShot: 0,
   };
@@ -318,7 +319,7 @@ setInterval(() => {
       if (from === h.length) from = h.length - 1;
       for (let i = from; i < h.length; i++) {
         const e = h[i];
-        list.push([o.id, e.x, e.y, e.z, e.yaw, e.a, o.hp, e.t]);
+        list.push([o.id, e.x, e.y, e.z, e.yaw, e.a, o.hp, e.t, e.pt]);
       }
       me.sent.set(o.id, h[h.length - 1].t);
     }
